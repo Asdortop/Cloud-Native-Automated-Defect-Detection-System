@@ -1,0 +1,98 @@
+# k8s/hpa.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# HorizontalPodAutoscaler — scales defect-serving based on CPU utilization.
+#
+# Target: 70 % CPU utilization across all pods in the Deployment.
+#
+# Prerequisites
+# ─────────────
+#   metrics-server must be installed in the cluster AND the Deployment must
+#   have resources.requests.cpu set (both are done — see deployment.yaml).
+#
+#   Install metrics-server in Kind (run ONCE after cluster creation):
+#
+#     kubectl apply -f \
+#       https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#
+#     # Kind uses self-signed TLS certs — patch metrics-server to skip cert verify:
+#     kubectl patch deployment metrics-server -n kube-system \
+#       --type='json' \
+#       -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-",
+#              "value":"--kubelet-insecure-tls"}]'
+#
+# How utilization is computed
+# ────────────────────────────
+#   averageUtilization = (sum of all pod CPU usage)
+#                        ────────────────────────────  × 100
+#                        (sum of all pod CPU requests)
+#
+#   With request = 250m and limit = 1000m, one pod at full throttle uses
+#   1000m / 250m = 4× its request → the HPA will scale until the average
+#   drops to ≤ 70 % (175m).
+#
+# Scaling behaviour
+# ─────────────────
+#   Scale-up  : immediate, up to +2 pods per minute (burst-friendly)
+#   Scale-down : waits 5 minutes of low utilization before removing a pod
+#                (prevents flapping on short bursts)
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: defect-serving-hpa
+  namespace: defect-inspection
+  labels:
+    app: defect-serving
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: defect-serving
+
+  minReplicas: 2    # always 2 pods for HA — never scale below this
+  maxReplicas: 10   # hard ceiling to prevent runaway scaling on a laptop
+
+  metrics:
+    # ── Primary metric: CPU utilization ────────────────────────────────────
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               Utilization
+          averageUtilization: 70   # target 70 % of the 250m CPU request
+
+    # ── Secondary metric: memory (informational — no scaling action) ───────
+    # Uncomment to also scale on memory pressure:
+    # - type: Resource
+    #   resource:
+    #     name: memory
+    #     target:
+    #       type:               Utilization
+    #       averageUtilization: 80
+
+  behavior:
+    scaleUp:
+      # React immediately when load spikes — don't wait for a stabilization window.
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        # Add up to 2 pods per 60-second window
+        - type:          Pods
+          value:         2
+          periodSeconds: 60
+        # Or scale by 100 % of current count, whichever is larger
+        - type:          Percent
+          value:         100
+          periodSeconds: 60
+
+    scaleDown:
+      # Wait 5 minutes of sustained low utilization before removing a pod.
+      # This prevents thrashing when inference bursts are short-lived.
+      stabilizationWindowSeconds: 300
+      selectPolicy: Min
+      policies:
+        # Remove at most 1 pod per 60-second window
+        - type:          Pods
+          value:         1
+          periodSeconds: 60

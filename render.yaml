@@ -1,0 +1,22 @@
+# render.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Render Infrastructure-as-Code manifest for Defect Inspection Platform.
+# Deploys the FastAPI Web UI + ONNX Inference API for free on Render.com.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: defect-inspection-platform
+    env: python
+    region: singapore
+    plan: free
+    branch: main
+    buildCommand: "pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt"
+    startCommand: "uvicorn src.serving.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: ONNX_MODEL_PATH
+        value: "models/defect_efficientnet_b0.onnx"
+      - key: CLASS_NAMES
+        value: "Crazing,Inclusion,Patches,Pitted_surface,Rolled-in_scale,Scratches"
+      - key: LOG_LEVEL
+        value: "info"

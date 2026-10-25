@@ -1,0 +1,16 @@
+Cloud-Native Automated Defect Detection System
+EfficientNet-B0 (ONNX Runtime) | NEU Metal Surface Defect Dataset
+============================================================
+
+                 precision    recall  f1-score   support
+
+        Crazing     1.0000    1.0000    1.0000         5
+      Inclusion     1.0000    1.0000    1.0000         5
+        Patches     1.0000    1.0000    1.0000         5
+ Pitted_surface     1.0000    1.0000    1.0000         5
+Rolled-in_scale     1.0000    1.0000    1.0000         5
+      Scratches     1.0000    1.0000    1.0000         5
+
+       accuracy                         1.0000        30
+      macro avg     1.0000    1.0000    1.0000        30
+   weighted avg     1.0000    1.0000    1.0000        30

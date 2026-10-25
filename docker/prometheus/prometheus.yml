@@ -1,0 +1,56 @@
+# docker/prometheus/prometheus.yml
+# ──────────────────────────────────
+# Prometheus scrape configuration for the defect-inspection stack.
+#
+# Reload after changes (no restart needed):
+#   curl -X POST http://localhost:9090/-/reload
+
+global:
+  scrape_interval:     15s   # how often to scrape targets
+  evaluation_interval: 15s   # how often to evaluate rules
+  scrape_timeout:      10s
+
+  external_labels:
+    project: "defect-inspection"
+    env:     "local"
+
+# ── Alerting (placeholder — add Alertmanager URL when ready) ──────────────
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+# ── Scrape jobs ───────────────────────────────────────────────────────────
+scrape_configs:
+
+  # 1. Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 2. FastAPI serving — prometheus-fastapi-instrumentator exposes /metrics
+  - job_name: "defect-serving"
+    metrics_path: /metrics
+    scrape_interval: 10s          # tighter interval for latency visibility
+    static_configs:
+      - targets: ["serving:8080"]
+        labels:
+          service: "defect-api"
+          version: "1.0.0"
+
+  # 3. MinIO — exposes /minio/v2/metrics/cluster on port 9000
+  - job_name: "minio"
+    metrics_path: /minio/v2/metrics/cluster
+    scheme: http
+    static_configs:
+      - targets: ["minio:9000"]
+        labels:
+          service: "minio"
+
+  # 4. Grafana self-monitoring
+  - job_name: "grafana"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["grafana:3000"]
+        labels:
+          service: "grafana"

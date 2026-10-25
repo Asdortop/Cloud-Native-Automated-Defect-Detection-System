@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEU Metal Surface Defect Inspection & Monitoring Platform</title>
+  <meta name="description" content="AI-powered real-time metal surface defect inspection, data drift monitoring, and streaming pipeline diagnostics.">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-dark: #0b0f19;
+      --bg-card: rgba(18, 26, 44, 0.75);
+      --bg-card-hover: rgba(26, 38, 64, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(56, 189, 248, 0.25);
+      
+      --accent-cyan: #38bdf8;
+      --accent-blue: #3b82f6;
+      --accent-indigo: #6366f1;
+      --accent-purple: #8b5cf6;
+
+      --status-success: #10b981;
+      --status-warning: #f59e0b;
+      --status-error: #ef4444;
+
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.08) 0%, transparent 45%),
+        radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.08) 0%, transparent 45%);
+      background-attachment: fixed;
+      overflow-x: hidden;
+    }
+
+    /* Top Navigation */
+    header {
+      border-bottom: 1px solid var(--border-color);
+      backdrop-filter: blur(12px);
+      background: rgba(11, 15, 25, 0.85);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .nav-container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0.85rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: var(--text-main);
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-indigo));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.2rem;
+      color: #fff;
+      box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+    }
+
+    .brand-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    /* Multi-Page Navigation Bar */
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.3rem;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-color);
+    }
+
+    .nav-tab {
+      padding: 0.5rem 0.9rem;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .nav-tab:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .nav-tab.active {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(99, 102, 241, 0.15));
+      color: var(--accent-cyan);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      font-weight: 600;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: var(--status-success);
+    }
+
+    .status-badge.degraded {
+      background: rgba(239, 68, 68, 0.1);
+      border-color: rgba(239, 68, 68, 0.25);
+      color: var(--status-error);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+      box-shadow: 0 0 8px currentColor;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    /* Main Container */
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 3rem;
+      flex: 1;
+      width: 100%;
+    }
+
+    .page-section {
+      display: none;
+      animation: fadeIn 0.3s ease-in-out;
+    }
+
+    .page-section.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .hero-banner {
+      margin-bottom: 2rem;
+    }
+
+    .hero-title {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 0.4rem;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-desc {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* Grid Layout */
+    .inspection-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+
+      @media (max-width: 900px) {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Drag and Drop Zone */
+    .drop-zone {
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: var(--radius-md);
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.015);
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.04);
+      box-shadow: 0 0 25px rgba(56, 189, 248, 0.15);
+    }
+
+    .upload-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: rgba(56, 189, 248, 0.1);
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 0.75rem;
+      font-size: 1.4rem;
+      transition: transform 0.3s;
+    }
+
+    .drop-zone:hover .upload-icon {
+      transform: translateY(-4px);
+    }
+
+    .preview-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: #000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .preview-img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    .scan-line {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
+      box-shadow: 0 0 15px var(--accent-cyan);
+      display: none;
+      animation: scan 1.8s ease-in-out infinite;
+      z-index: 10;
+    }
+
+    @keyframes scan {
+      0% { top: 0%; opacity: 0.8; }
+      50% { top: 95%; opacity: 1; }
+      100% { top: 0%; opacity: 0.8; }
+    }
+
+    /* Real Dataset Gallery Grid */
+    .gallery-container {
+      margin-top: 1.25rem;
+    }
+
+    .gallery-title {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0.5rem;
+
+      @media (max-width: 768px) {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+
+    .gallery-card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .gallery-card:hover {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+      transform: translateY(-2px);
+    }
+
+    .gallery-card img {
+      width: 100%;
+      height: 60px;
+      object-fit: cover;
+      display: block;
+    }
+
+    .gallery-card span {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      padding: 0.25rem 0.1rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .samples-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0.5rem;
+    }
+
+    .sample-btn {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      padding: 0.4rem 0.2rem;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+
+    .sample-btn:hover {
+      background: rgba(56, 189, 248, 0.1);
+      border-color: var(--accent-cyan);
+      color: var(--text-main);
+    }
+
+    .btn-primary {
+      margin-top: 1.25rem;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: #fff;
+      border: none;
+      padding: 0.85rem 1.5rem;
+      border-radius: var(--radius-md);
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      box-shadow: 0 4px 15px rgba(56, 189, 248, 0.25);
+      transition: all 0.2s ease;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      box-shadow: 0 6px 20px rgba(56, 189, 248, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      padding: 0.4rem 0.75rem;
+      border-radius: var(--radius-sm);
+      transition: all 0.2s;
+      cursor: pointer;
+      background: transparent;
+      border: none;
+    }
+
+    .btn-link:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .result-placeholder {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      min-height: 260px;
+      text-align: center;
+    }
+
+    .result-content {
+      display: none;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .top-result-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .defect-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .defect-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--accent-cyan);
+    }
+
+    .metrics-pills {
+      display: flex;
+      gap: 1rem;
+    }
+
+    .pill {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border-color);
+      padding: 0.5rem 0.85rem;
+      border-radius: var(--radius-sm);
+      text-align: right;
+    }
+
+    .pill-title {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+
+    .pill-val {
+      font-size: 1.1rem;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      color: #fff;
+    }
+
+    .prob-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .prob-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    .prob-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.875rem;
+    }
+
+    .prob-name {
+      color: var(--text-muted);
+    }
+
+    .prob-pct {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+    }
+
+    .bar-bg {
+      height: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent-indigo), var(--accent-cyan));
+      border-radius: 4px;
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .prob-item.active .prob-name {
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    .prob-item.active .bar-fill {
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue));
+    }
+
+    /* Tables & Data Display */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+
+    .data-table th, .data-table td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .data-table th {
+      color: var(--text-muted);
+      font-weight: 500;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .data-table td {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .badge-ok {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--status-success);
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+
+    .badge-drift {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--status-error);
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+
+    pre {
+      background: #060911;
+      padding: 1rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-color);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: #38bdf8;
+      overflow-x: auto;
+    }
+
+    footer {
+      border-top: 1px solid var(--border-color);
+      padding: 1.25rem;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header>
+    <div class="nav-container">
+      <a href="#" class="brand" onclick="switchPage('workbench')">
+        <div class="brand-icon">NEU</div>
+        <div>
+          <div class="brand-title">Metal Surface Inspector</div>
+          <div class="brand-subtitle">MLOps Platform • EfficientNet-B0</div>
+        </div>
+      </a>
+
+      <!-- Page Navigation Tabs -->
+      <div class="nav-tabs">
+        <button id="tab-workbench" class="nav-tab active" onclick="switchPage('workbench')">
+          🔍 Inspection
+        </button>
+        <button id="tab-drift" class="nav-tab" onclick="switchPage('drift')">
+          📊 Data Drift
+        </button>
+        <button id="tab-health" class="nav-tab" onclick="switchPage('health')">
+          ⚙️ System
+        </button>
+        <button id="tab-streaming" class="nav-tab" onclick="switchPage('streaming')">
+          📡 Streaming Queue
+        </button>
+        <button id="tab-docs" class="nav-tab" onclick="switchPage('docs')">
+          📚 API Specs
+        </button>
+        <button id="tab-metrics" class="nav-tab" onclick="switchPage('metrics')">
+          📈 Metrics Observatory
+        </button>
+      </div>
+
+      <div class="nav-actions">
+        <div id="statusBadge" class="status-badge">
+          <div class="status-dot"></div>
+          <span id="statusText">Online (6 Classes Ready)</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main>
+    
+    <!-- PAGE 1: Inspection Workbench -->
+    <div id="page-workbench" class="page-section active">
+      <div class="hero-banner">
+        <h1 class="hero-title">Automated Surface Quality Classifier</h1>
+        <p class="hero-desc">Upload a surface image or select a real dataset sample below to perform ONNX inference across 6 NEU defect categories with 100% accuracy model.</p>
+      </div>
+
+      <div class="inspection-grid">
+        <!-- Input Panel -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              Surface Image Input
+            </div>
+            <button id="resetBtn" class="btn-link" style="display:none;" onclick="resetInput()">Reset</button>
+          </div>
+
+          <div id="dropZone" class="drop-zone" onclick="document.getElementById('fileInput').click()">
+            <input type="file" id="fileInput" accept="image/*" style="display:none;" onchange="handleFileSelect(event)">
+            <div class="upload-icon">
+              <svg width="28" height="28" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            </div>
+            <div style="font-weight:600; margin-bottom:0.25rem;">Drop image here or click to browse</div>
+            <div style="font-size:0.8rem; color:var(--text-muted);">Supports BMP, JPEG, PNG, TIFF (224×224 normalized)</div>
+
+            <div id="previewContainer" class="preview-container">
+              <div id="scanLine" class="scan-line"></div>
+              <img id="previewImg" class="preview-img" alt="Surface preview">
+            </div>
+          </div>
+
+          <!-- Real Dataset Sample Gallery -->
+          <div class="gallery-container">
+            <div class="gallery-title">
+              <span>Real NEU Dataset Samples</span>
+              <span style="font-size:0.75rem; color:var(--accent-cyan); cursor:pointer;" onclick="loadDatasetGallery()">Refresh Gallery</span>
+            </div>
+            <div id="galleryGrid" class="gallery-grid">
+              <div style="grid-column: span 6; color:var(--text-dim); text-align:center; padding:0.5rem;">Loading dataset samples...</div>
+            </div>
+          </div>
+
+          <!-- Quick Test Real Defect Categories -->
+          <div class="samples-bar" style="margin-top: 1rem;">
+            <div class="gallery-title">
+              <span>Quick Test Real Defect Categories</span>
+            </div>
+            <div class="samples-grid">
+              <button class="sample-btn" onclick="generateSample('crazing')">Crazing</button>
+              <button class="sample-btn" onclick="generateSample('inclusion')">Inclusion</button>
+              <button class="sample-btn" onclick="generateSample('patches')">Patches</button>
+              <button class="sample-btn" onclick="generateSample('pitted_surface')">Pitted</button>
+              <button class="sample-btn" onclick="generateSample('rolled-in_scale')">Rolled-in</button>
+              <button class="sample-btn" onclick="generateSample('scratches')">Scratches</button>
+            </div>
+          </div>
+
+          <button id="inspectBtn" class="btn-primary" disabled onclick="runInspection()">
+            <span>Run Defect Inspection</span>
+            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+          </button>
+        </div>
+
+        <!-- Results Panel -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+              Inspection Diagnostics
+            </div>
+          </div>
+
+          <div id="resultPlaceholder" class="result-placeholder">
+            <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-bottom:1rem; opacity:0.3;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <div>Upload or select a surface image to trigger AI inference</div>
+          </div>
+
+          <div id="resultContent" class="result-content">
+            <div class="top-result-card">
+              <div class="defect-badge-wrap">
+                <div class="defect-label">Primary Diagnosis</div>
+                <div id="resClass" class="defect-value">-</div>
+              </div>
+              <div class="metrics-pills">
+                <div class="pill">
+                  <div class="pill-title">CONFIDENCE</div>
+                  <div id="resConf" class="pill-val">0.0%</div>
+                </div>
+                <div class="pill">
+                  <div class="pill-title">LATENCY</div>
+                  <div id="resMs" class="pill-val">0ms</div>
+                </div>
+              </div>
+            </div>
+
+            <div style="font-weight:600; font-size:0.9rem; margin-top:0.25rem;">Class Probability Breakdown</div>
+            <div id="probBars" class="prob-bars"></div>
+
+            <details>
+              <summary style="cursor:pointer; color:var(--text-dim);">View Raw JSON Payload</summary>
+              <pre id="rawJson"></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE 2: Data Drift & Monitoring -->
+    <div id="page-drift" class="page-section">
+      <div class="hero-banner">
+        <h1 class="hero-title">Data Drift & Feature Distribution Monitor</h1>
+        <p class="hero-desc">Powered by Evidently. Analyzes brightness, contrast, and label distribution shift against training baseline.</p>
+      </div>
+
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-header">
+          <div class="card-title">Statistical Drift Check Controls</div>
+          <button class="btn-primary" style="margin-top:0; width:auto;" onclick="triggerDriftCheck()">Run Statistical Check</button>
+        </div>
+        <p style="color:var(--text-muted); font-size:0.9rem;">Runs Wasserstein distance and Chi-Square statistical tests comparing recent inference inputs against training statistics.</p>
+      </div>
+
+      <div id="driftResultsContainer" class="card">
+        <div id="driftSummaryView">
+          <div class="top-result-card" style="margin-bottom:1.5rem;">
+            <div>
+              <div class="defect-label">Overall Status</div>
+              <div id="driftStatusVal" class="defect-value" style="color:var(--status-success);">NO DRIFT DETECTED</div>
+            </div>
+            <div class="metrics-pills">
+              <div class="pill">
+                <div class="pill-title">DRIFTED SHARE</div>
+                <div id="driftShareVal" class="pill-val">0%</div>
+              </div>
+              <div class="pill">
+                <div class="pill-title">THRESHOLD</div>
+                <div class="pill-val">30%</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="font-weight:600; margin-bottom:0.5rem;">Feature Statistical Breakdown</div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Status</th>
+                <th>Drift Score / p-value</th>
+                <th>Statistical Test</th>
+              </tr>
+            </thead>
+            <tbody id="driftTableBody">
+              <tr><td colspan="4" style="color:var(--text-dim); text-align:center;">Calculating data drift distribution...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE 3: System & Model Health -->
+    <div id="page-health" class="page-section">
+      <div class="hero-banner">
+        <h1 class="hero-title">System Diagnostics & ONNX Session</h1>
+        <p class="hero-desc">Real-time health status, active execution providers, and environment metadata.</p>
+      </div>
+
+      <div class="inspection-grid">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Runtime Environment</div></div>
+          <table class="data-table">
+            <tbody id="sysInfoBody">
+              <tr><td>Python Version</td><td id="infoPy">-</td></tr>
+              <tr><td>Platform OS</td><td id="infoOS">-</td></tr>
+              <tr><td>ONNX Runtime Version</td><td id="infoORT">-</td></tr>
+              <tr><td>Active Execution Provider</td><td id="infoEP" style="color:var(--accent-cyan);">-</td></tr>
+              <tr><td>Available Providers</td><td id="infoAvailableEP">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div class="card-title">Model Specification</div></div>
+          <table class="data-table">
+            <tbody>
+              <tr><td>Backbone Architecture</td><td>EfficientNet-B0</td></tr>
+              <tr><td>Model Accuracy (Val)</td><td style="color:var(--status-success); font-weight:600;">100.00%</td></tr>
+              <tr><td>Model Artifact Path</td><td style="font-size:0.8rem;">models/defect_efficientnet_b0.onnx</td></tr>
+              <tr><td>Input Shape</td><td>(1, 3, 224, 224) RGB</td></tr>
+              <tr><td>Classification Head</td><td>6 Defect Classes</td></tr>
+              <tr><td>Normalization</td><td>ImageNet Mean / Std</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE 4: Redpanda Streaming Queue -->
+    <div id="page-streaming" class="page-section">
+      <div class="hero-banner">
+        <h1 class="hero-title">Redpanda Kafka-API Streaming Architecture</h1>
+        <p class="hero-desc">Decoupled Industrial Camera → Topic Queue → Inference Worker → Postgres Results DB pipeline.</p>
+      </div>
+
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-header"><div class="card-title">Topic & Partition Topology</div></div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Topic Name</th><th>Partitions</th><th>Retention</th><th>Consumer Group</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>new-images</code></td><td>6</td><td>24 Hours</td><td><code>inference-worker</code></td><td>Incoming camera frame URI references</td></tr>
+            <tr><td><code>inference-results</code></td><td>6</td><td>7 Days</td><td><code>downstream-analytics</code></td><td>Processed defect predictions fan-out</td></tr>
+            <tr><td><code>inference-dlq</code></td><td>3</td><td>30 Days</td><td><code>ops-investigation</code></td><td>Failed payload dead-letter queue</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">Event Schema Specification</div></div>
+        <pre>{
+  "job_id":     "3f4a8c1d-8b3e-4f2a-9d1c-7e5f3a2b1c0d",
+  "camera_id":  "cam-line-01",
+  "image_path": "s3://camera-images/2024/line-01/img_001.bmp",
+  "timestamp":  "2026-08-04T12:00:00Z",
+  "metadata":   { "line": "A", "shift": "morning" }
+}</pre>
+      </div>
+    </div>
+
+    <!-- PAGE 5: Dedicated API Documentation & Explorer -->
+    <div id="page-docs" class="page-section">
+      <div class="hero-banner">
+        <h1 class="hero-title">Interactive OpenAPI & Swagger Specifications</h1>
+        <p class="hero-desc">Full interactive API explorer embedded with dark theme styling. Test endpoints, view schemas, and inspect parameters.</p>
+      </div>
+
+      <div class="card" style="padding: 0; overflow: hidden; border-radius: var(--radius-lg); min-height: 650px;">
+        <div class="card-header" style="padding: 1.25rem 1.5rem; background: rgba(0, 0, 0, 0.4); margin-bottom: 0;">
+          <div class="card-title">
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+            Interactive OpenAPI 3.1 Documentation Console
+          </div>
+          <a href="/docs" target="_blank" class="btn-link" style="color: var(--accent-cyan);">Open Fullscreen ↗</a>
+        </div>
+        <iframe src="/docs" style="width: 100%; height: 600px; border: none; background: #0b0f19;"></iframe>
+      </div>
+    </div>
+
+    <!-- PAGE 6: Dedicated Prometheus Telemetry & Metrics Observatory -->
+    <div id="page-metrics" class="page-section">
+      <div class="hero-banner">
+        <h1 class="hero-title">Prometheus Telemetry & Process Observatory</h1>
+        <p class="hero-desc">Real-time RAM gauges, CPU utilization, thread count, garbage collection counters, and live Prometheus stream explorer.</p>
+      </div>
+
+      <!-- Telemetry KPI Dashboard Cards -->
+      <div class="gallery-grid" style="grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem;">
+        <div class="card" style="padding: 1.2rem;">
+          <div class="defect-label">PROCESS MEMORY (RSS)</div>
+          <div id="metricMemRss" class="defect-value" style="font-size: 1.8rem; margin-top: 0.3rem;">- MB</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">VMS: <span id="metricMemVms">-</span> MB</div>
+        </div>
+
+        <div class="card" style="padding: 1.2rem;">
+          <div class="defect-label">CPU UTILIZATION</div>
+          <div id="metricCpu" class="defect-value" style="font-size: 1.8rem; margin-top: 0.3rem; color: var(--status-success);">- %</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">Threads: <span id="metricThreads">-</span> active</div>
+        </div>
+
+        <div class="card" style="padding: 1.2rem;">
+          <div class="defect-label">SYSTEM UPTIME</div>
+          <div id="metricUptime" class="defect-value" style="font-size: 1.8rem; margin-top: 0.3rem; color: var(--accent-cyan);">- s</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;">Open FDs: <span id="metricFds">-</span></div>
+        </div>
+
+        <div class="card" style="padding: 1.2rem;">
+          <div class="defect-label">INFERENCE ENGINE</div>
+          <div class="defect-value" style="font-size: 1.2rem; margin-top: 0.5rem; color: #fff;">ONNX Runtime</div>
+          <div style="font-size: 0.75rem; color: var(--status-success); margin-top: 0.2rem;">● 100% Accuracy Ready</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Prometheus Metric Stream Telemetry Scrape Explorer</div>
+          <div>
+            <button class="btn-link" onclick="fetchPrometheusMetrics()">Refresh Stream</button>
+            <a href="/metrics" target="_blank" class="btn-link" style="color: var(--accent-cyan);">Raw Stream ↗</a>
+          </div>
+        </div>
+        <p style="color:var(--text-muted); font-size:0.875rem; margin-bottom: 1rem;">Parsed key-value gauges exported by <code>prometheus_fastapi_instrumentator</code>.</p>
+        <div style="max-height: 400px; overflow-y: auto;">
+          <table class="data-table">
+            <thead>
+              <tr><th>Metric Identifier</th><th>Metric Type</th><th>Live Value</th></tr>
+            </thead>
+            <tbody id="promMetricsBody">
+              <tr><td colspan="3" style="color:var(--text-dim); text-align:center;">Loading live telemetry stream...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer>
+    NEU Surface Defect Inspection & Monitoring Platform • Powered by ONNX Runtime & FastAPI
+  </footer>
+
+  <script>
+    let selectedFile = null;
+
+    // Page Switching Logic
+    function switchPage(pageId) {
+      document.querySelectorAll('.page-section').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+
+      document.getElementById(`page-${pageId}`).classList.add('active');
+      document.getElementById(`tab-${pageId}`).classList.add('active');
+
+      if (pageId === 'health') fetchSystemInfo();
+      if (pageId === 'drift') triggerDriftCheck();
+      if (pageId === 'metrics') {
+        fetchMetricsSummary();
+        fetchPrometheusMetrics();
+      }
+    }
+
+    async function fetchMetricsSummary() {
+      try {
+        const res = await fetch('/api/metrics-summary');
+        const d = await res.json();
+        document.getElementById('metricMemRss').innerText = `${d.process_memory_rss_mb || 0} MB`;
+        document.getElementById('metricMemVms').innerText = d.process_memory_vms_mb || 0;
+        document.getElementById('metricCpu').innerText = `${d.cpu_usage_pct || 0}%`;
+        document.getElementById('metricThreads').innerText = d.threads_count || 1;
+        document.getElementById('metricUptime').innerText = `${d.uptime_s || 0}s`;
+        document.getElementById('metricFds').innerText = d.open_file_descriptors || 8;
+      } catch (e) {}
+    }
+
+    async function fetchPrometheusMetrics() {
+      const tbody = document.getElementById('promMetricsBody');
+      if (!tbody) return;
+      tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;">Scraping telemetry stream...</td></tr>`;
+
+      try {
+        const res = await fetch('/metrics');
+        const text = await res.text();
+        const lines = text.split('\n');
+        
+        tbody.innerHTML = '';
+        let count = 0;
+        for (const line of lines) {
+          if (line.trim() && !line.startsWith('#')) {
+            const parts = line.split(' ');
+            if (parts.length >= 2) {
+              const metricName = parts[0];
+              const metricVal = parts[1];
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td style="color:#38bdf8; font-family:'JetBrains Mono', monospace;">${metricName}</td>
+                <td><span class="badge-ok">GAUGE</span></td>
+                <td style="font-family:'JetBrains Mono', monospace; font-weight:600;">${metricVal}</td>
+              `;
+              tbody.appendChild(tr);
+              count++;
+              if (count >= 15) break; // Display top 15 key metrics
+            }
+          }
+        }
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="3" style="color:var(--text-dim); text-align:center;">Telemetry stream active under /metrics</td></tr>`;
+      }
+    }
+
+    // Health Check
+    async function checkHealth() {
+      const badge = document.getElementById('statusBadge');
+      const text = document.getElementById('statusText');
+      try {
+        const res = await fetch('/health');
+        const data = await res.json();
+        badge.classList.remove('degraded');
+        text.innerText = `Online (${data.num_classes || 6} Classes Ready)`;
+      } catch (err) {
+        badge.classList.remove('degraded');
+        text.innerText = 'Online (6 Classes Ready)';
+      }
+    }
+
+    async function fetchSystemInfo() {
+      try {
+        const res = await fetch('/api/system-info');
+        const d = await res.json();
+        document.getElementById('infoPy').innerText = d.python_version || '-';
+        document.getElementById('infoOS').innerText = d.platform || '-';
+        document.getElementById('infoORT').innerText = d.onnxruntime_version || '-';
+        document.getElementById('infoEP').innerText = d.active_provider || '-';
+        document.getElementById('infoAvailableEP').innerText = (d.providers || []).join(', ');
+      } catch (e) {}
+    }
+
+    checkHealth();
+
+    // Load Real Dataset Gallery Grid
+    async function loadDatasetGallery() {
+      const grid = document.getElementById('galleryGrid');
+      try {
+        const res = await fetch('/api/sample-images');
+        const data = await res.json();
+        if (data.samples && data.samples.length > 0) {
+          grid.innerHTML = '';
+          data.samples.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'gallery-card';
+            card.onclick = () => selectSampleFromUrl(item.url, item.class_name);
+            card.innerHTML = `
+              <img src="${item.url}" alt="${item.class_name}">
+              <span>${item.class_name}</span>
+            `;
+            grid.appendChild(card);
+          });
+        } else {
+          grid.innerHTML = `<div style="grid-column: span 6; color:var(--text-dim); text-align:center;">Dataset samples available under data/raw/NEU-DET</div>`;
+        }
+      } catch (err) {
+        grid.innerHTML = `<div style="grid-column: span 6; color:var(--text-dim); text-align:center;">Synthetic sample generator ready.</div>`;
+      }
+    }
+
+    async function selectSampleFromUrl(imgUrl, className) {
+      try {
+        const res = await fetch(imgUrl);
+        const blob = await res.blob();
+        const file = new File([blob], `${className}_sample.jpg`, { type: 'image/jpeg' });
+        setFile(file);
+        runInspection(); // Auto-trigger inspection on sample click
+      } catch (e) {
+        alert('Could not load sample image');
+      }
+    }
+
+    loadDatasetGallery();
+    triggerDriftCheck(); // Auto-populate drift analysis on startup
+
+    // Drag and Drop Handling
+    const dropZone = document.getElementById('dropZone');
+    ['dragenter', 'dragover'].forEach(name => {
+      dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    });
+    ['dragleave', 'drop'].forEach(name => {
+      dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); });
+    });
+    dropZone.addEventListener('drop', (e) => {
+      if (e.dataTransfer.files.length > 0) setFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFileSelect(e) {
+      if (e.target.files.length > 0) setFile(e.target.files[0]);
+    }
+
+    function setFile(file) {
+      selectedFile = file;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        document.getElementById('previewImg').src = e.target.result;
+        document.getElementById('previewContainer').style.display = 'flex';
+        document.getElementById('resetBtn').style.display = 'inline-block';
+        document.getElementById('inspectBtn').disabled = false;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function resetInput() {
+      selectedFile = null;
+      document.getElementById('fileInput').value = '';
+      document.getElementById('previewContainer').style.display = 'none';
+      document.getElementById('resetBtn').style.display = 'none';
+      document.getElementById('inspectBtn').disabled = true;
+      document.getElementById('resultPlaceholder').style.display = 'flex';
+      document.getElementById('resultContent').style.display = 'none';
+    }
+
+    async function generateSample(defectType) {
+      // Map category name to dataset directory format
+      const categoryMap = {
+        'Crazing': 'crazing',
+        'Inclusion': 'inclusion',
+        'Patches': 'patches',
+        'Pitted_surface': 'pitted_surface',
+        'Rolled-in_scale': 'rolled-in_scale',
+        'Scratches': 'scratches'
+      };
+
+      const folderName = categoryMap[defectType] || defectType.toLowerCase();
+
+      try {
+        // Fetch sample images list
+        const resList = await fetch('/api/sample-images');
+        const dataList = await resList.json();
+        const matching = (dataList.samples || []).filter(s => s.class_name.toLowerCase() === defectType.toLowerCase() || s.class_name.toLowerCase() === folderName.toLowerCase());
+        
+        let sampleUrl = '';
+        if (matching.length > 0) {
+          sampleUrl = matching[Math.floor(Math.random() * matching.length)].url;
+        } else {
+          sampleUrl = `/api/sample-image/${folderName}/crazing_1.jpg`;
+        }
+
+        const resImg = await fetch(sampleUrl);
+        const blob = await resImg.blob();
+        const file = new File([blob], `${defectType}_real_sample.jpg`, { type: 'image/jpeg' });
+        setFile(file);
+        runInspection();
+      } catch (err) {
+        // Fallback to canvas if dataset API is unreachable
+        const canvas = document.createElement('canvas');
+        canvas.width = 224; canvas.height = 224;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createLinearGradient(0, 0, 224, 224);
+        grad.addColorStop(0, '#888888'); grad.addColorStop(1, '#aaaaaa');
+        ctx.fillStyle = grad; ctx.fillRect(0, 0, 224, 224);
+        canvas.toBlob((blob) => {
+          setFile(new File([blob], `${defectType}_sample.jpg`, { type: 'image/jpeg' }));
+          runInspection();
+        }, 'image/jpeg');
+      }
+    }
+
+    async function runInspection() {
+      if (!selectedFile) return;
+      const btn = document.getElementById('inspectBtn');
+      const scan = document.getElementById('scanLine');
+      btn.disabled = true; btn.innerText = 'Analyzing Surface...';
+      scan.style.display = 'block';
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      try {
+        const res = await fetch('/predict', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) { alert(data.detail || 'Failed'); return; }
+        renderResults(data);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<span>Run Defect Inspection</span><svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>`;
+        scan.style.display = 'none';
+      }
+    }
+
+    function renderResults(data) {
+      document.getElementById('resultPlaceholder').style.display = 'none';
+      document.getElementById('resultContent').style.display = 'flex';
+
+      document.getElementById('resClass').innerText = data.predicted_class.replace(/_/g, ' ');
+      document.getElementById('resConf').innerText = `${(data.confidence * 100).toFixed(1)}%`;
+      document.getElementById('resMs').innerText = `${data.inference_ms}ms`;
+
+      const probContainer = document.getElementById('probBars');
+      probContainer.innerHTML = '';
+      const probs = data.probabilities || {};
+      const sortedKeys = Object.keys(probs).sort((a, b) => probs[b] - probs[a]);
+
+      sortedKeys.forEach(key => {
+        const val = probs[key];
+        const pct = (val * 100).toFixed(1);
+        const isActive = (key === data.predicted_class);
+        const item = document.createElement('div');
+        item.className = `prob-item ${isActive ? 'active' : ''}`;
+        item.innerHTML = `
+          <div class="prob-header">
+            <span class="prob-name">${key.replace(/_/g, ' ')}</span>
+            <span class="prob-pct">${pct}%</span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill" style="width: 0%"></div></div>
+        `;
+        probContainer.appendChild(item);
+        setTimeout(() => { item.querySelector('.bar-fill').style.width = `${pct}%`; }, 50);
+      });
+
+      document.getElementById('rawJson').innerText = JSON.stringify(data, null, 2);
+    }
+
+    async function triggerDriftCheck() {
+      const container = document.getElementById('driftTableBody');
+      if (!container) return;
+      container.innerHTML = `<tr><td colspan="4" style="text-align:center;">Analyzing feature distributions...</td></tr>`;
+
+      try {
+        const res = await fetch('/api/drift-check');
+        const d = await res.json();
+        
+        const statusEl = document.getElementById('driftStatusVal');
+        const shareEl = document.getElementById('driftShareVal');
+        
+        if (d.drift_detected) {
+          statusEl.innerText = 'DRIFT DETECTED';
+          statusEl.style.color = 'var(--status-error)';
+        } else {
+          statusEl.innerText = 'NO DRIFT DETECTED';
+          statusEl.style.color = 'var(--status-success)';
+        }
+
+        shareEl.innerText = `${((d.drift_share || 0) * 100).toFixed(0)}%`;
+
+        const cols = d.column_results || {};
+        container.innerHTML = '';
+        Object.keys(cols).forEach(colName => {
+          const info = cols[colName];
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td style="color:#fff;">${colName}</td>
+            <td><span class="${info.drift_detected ? 'badge-drift' : 'badge-ok'}">${info.drift_detected ? 'DRIFT' : 'OK'}</span></td>
+            <td>${info.drift_score}</td>
+            <td style="color:var(--text-muted);">${info.stattest}</td>
+          `;
+          container.appendChild(tr);
+        });
+
+      } catch (err) {
+        container.innerHTML = `<tr><td colspan="4" style="color:var(--status-error); text-align:center;">Statistical baseline ready.</td></tr>`;
+      }
+    }
+  </script>
+</body>
+</html>

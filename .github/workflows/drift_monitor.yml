@@ -1,0 +1,426 @@
+# .github/workflows/drift_monitor.yml
+# ──────────────────────────────────────────────────────────────────────────
+# Data Drift Monitor
+#
+# Runs weekly (or on demand) to compare the feature distribution of recent
+# production predictions against the training set baseline.
+#
+# If drift is detected (≥ threshold fraction of features):
+#   1. Fails the workflow (red ✗ — visible in Actions UI)
+#   2. Creates a GitHub Issue tagged "drift-alert" with a full summary
+#      and link to the HTML report artifact — no paid alerting service.
+#
+# If a drift-alert issue already exists (open), a comment is added instead
+# of opening a duplicate.
+#
+# If drift resolves on a later run, the open drift issue is closed
+# automatically with a "resolved" comment.
+#
+# Free tier notes
+# ────────────────
+#   • Postgres runs as a GitHub Actions service container (included in free tier).
+#   • Issue creation uses the built-in GITHUB_TOKEN — no PAT or paid service.
+#   • HTML report uploaded as a workflow artifact (free up to 500 MB / month).
+#   • CPU-only torch wheel avoids the 2 GB CUDA download.
+# ──────────────────────────────────────────────────────────────────────────
+
+name: Data Drift Monitor
+
+on:
+  schedule:
+    # Weekly on Monday at 07:00 UTC (offset from model-gate at 06:00)
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: "Production window (days of predictions to compare)"
+        required: false
+        default: "7"
+      threshold:
+        description: "Drift share threshold — fraction of features that must drift"
+        required: false
+        default: "0.3"
+      min_samples:
+        description: "Minimum production samples required for statistical test"
+        required: false
+        default: "30"
+      seed_drift:
+        description: "Seed the DB with drifted data for testing (true/false)"
+        required: false
+        default: "true"
+
+concurrency:
+  group: drift-monitor
+  cancel-in-progress: true  # only one drift check runs at a time
+
+permissions:
+  contents: read
+  issues:   write   # create / comment on / close GitHub Issues
+
+env:
+  PYTHON_VERSION:  "3.10"
+  TORCH_INDEX:     "https://download.pytorch.org/whl/cpu"
+  POSTGRES_DSN:    "postgresql://mlflow:mlflow@localhost:5432/mlflow"
+  WINDOW_DAYS:     ${{ inputs.window_days  || '7' }}
+  DRIFT_THRESHOLD: ${{ inputs.threshold    || '0.3' }}
+  MIN_SAMPLES:     ${{ inputs.min_samples  || '30' }}
+  SEED_DRIFT:      ${{ inputs.seed_drift   || 'true' }}
+  REPORT_NAME:     "drift_report"        # base filename for HTML + JSON
+
+# ── Postgres service container ─────────────────────────────────────────────
+# Runs in the background for the duration of the job — free on GitHub Actions.
+# The drift checker connects via localhost:5432.
+# ──────────────────────────────────────────────────────────────────────────
+
+jobs:
+  drift-check:
+    name: "Feature Drift Check"
+    runs-on: ubuntu-22.04
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB:       mlflow
+          POSTGRES_USER:     mlflow
+          POSTGRES_PASSWORD: mlflow
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout  5s
+          --health-retries  5
+        ports:
+          - 5432:5432
+
+    steps:
+
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Python setup ──────────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # ── Dependencies ──────────────────────────────────────────────────────
+      - name: Install CPU-only PyTorch (for transforms)
+        run: |
+          pip install --upgrade pip
+          pip install \
+            torch==2.1.2+cpu \
+            torchvision==0.16.2+cpu \
+            --extra-index-url ${{ env.TORCH_INDEX }}
+
+      - name: Install project dependencies
+        run: |
+          pip install \
+            evidently \
+            psycopg2-binary \
+            Pillow numpy pandas pyarrow
+
+      # ── Pull training reference data (optional, non-fatal) ────────────────
+      - name: Pull DVC reference data
+        continue-on-error: true
+        run: |
+          pip install dvc --quiet
+          dvc pull data/reference_stats.parquet 2>&1 \
+            || echo "DVC pull skipped — will generate reference from training dir or skip."
+
+      # ── Seed Postgres with synthetic predictions ───────────────────────────
+      # In CI there are no real camera predictions, so we generate synthetic
+      # data that includes deliberate drift (30% of rows) so the alert path
+      # is exercised on every workflow run.
+      - name: Seed predictions table
+        env:
+          POSTGRES_DSN: ${{ env.POSTGRES_DSN }}
+        run: |
+          python tests/fixtures/seed_predictions.py \
+            --postgres-dsn "$POSTGRES_DSN" \
+            --n-rows        200 \
+            ${{ env.SEED_DRIFT == 'false' && '--no-drift' || '' }}
+
+      # ── Run drift check ───────────────────────────────────────────────────
+      - name: Run drift check
+        id: drift
+        env:
+          POSTGRES_DSN:    ${{ env.POSTGRES_DSN }}
+          PYTHONPATH:      .
+          PYTHONIOENCODING: utf-8
+        run: |
+          mkdir -p reports/
+
+          # Choose reference source: parquet (fast) or training dir (if available)
+          if [ -f "data/reference_stats.parquet" ]; then
+            REF_ARG="--reference-parquet data/reference_stats.parquet"
+            echo "Using pre-computed reference parquet."
+          elif [ -d "data/raw" ]; then
+            REF_ARG="--training-dir data/raw"
+            echo "Computing reference from training images."
+          else
+            echo "::warning::No training data available — generating synthetic reference."
+            # Generate synthetic reference on-the-fly using a helper
+            python - <<'PYEOF'
+          import numpy as np, pandas as pd, pathlib
+          rng = np.random.default_rng(0)
+          classes = ["Crazing","Inclusion","Patches","Pitted_surface","Rolled-in_scale","Scratches"]
+          n = 1800  # 300 per class
+          df = pd.DataFrame({
+              "brightness":     rng.normal(118.0, 22.0, n).clip(0, 255),
+              "contrast":       rng.normal(45.0,  12.0, n).clip(0, 128),
+              "confidence":     rng.normal(0.87,  0.08, n).clip(0.01, 0.99),
+              "predicted_class": np.repeat(classes, n // len(classes)),
+          })
+          pathlib.Path("data").mkdir(exist_ok=True)
+          df.to_parquet("data/reference_stats.parquet", index=False)
+          print(f"Synthetic reference: {len(df)} rows saved.")
+          PYEOF
+            REF_ARG="--reference-parquet data/reference_stats.parquet"
+          fi
+
+          set +e    # don't abort on non-zero exit — we handle it below
+          python src/monitoring/drift_check.py \
+            $REF_ARG \
+            --postgres-dsn  "$POSTGRES_DSN" \
+            --window-days   "$WINDOW_DAYS" \
+            --threshold     "$DRIFT_THRESHOLD" \
+            --min-samples   "$MIN_SAMPLES" \
+            --output-dir    reports/ \
+            --report-name   "$REPORT_NAME"
+          DRIFT_EXIT=$?
+          set -e
+
+          echo "drift_exit_code=${DRIFT_EXIT}" >> "$GITHUB_OUTPUT"
+
+          # Parse JSON summary for downstream steps
+          SUMMARY_FILE="reports/${REPORT_NAME}.json"
+          if [ -f "$SUMMARY_FILE" ]; then
+            DRIFT_DETECTED=$(python -c "import json; d=json.load(open('$SUMMARY_FILE')); print(d.get('drift_detected', False))")
+            DRIFT_SHARE=$(python -c "import json; d=json.load(open('$SUMMARY_FILE')); print(round(d.get('drift_share',0)*100,1))")
+            DRIFTED_COLS=$(python -c "import json; d=json.load(open('$SUMMARY_FILE')); print(', '.join(d.get('drifted_features',[]) or ['none']))")
+            N_CURRENT=$(python -c "import json; d=json.load(open('$SUMMARY_FILE')); print(d.get('n_current_samples','?'))")
+            N_REF=$(python -c "import json; d=json.load(open('$SUMMARY_FILE')); print(d.get('n_reference_samples','?'))")
+            INSUFFICIENT=$(python -c "import json; d=json.load(open('$SUMMARY_FILE')); print(d.get('insufficient_data', False))")
+
+            echo "drift_detected=${DRIFT_DETECTED}"   >> "$GITHUB_OUTPUT"
+            echo "drift_share=${DRIFT_SHARE}"          >> "$GITHUB_OUTPUT"
+            echo "drifted_cols=${DRIFTED_COLS}"        >> "$GITHUB_OUTPUT"
+            echo "n_current=${N_CURRENT}"              >> "$GITHUB_OUTPUT"
+            echo "n_reference=${N_REF}"                >> "$GITHUB_OUTPUT"
+            echo "insufficient_data=${INSUFFICIENT}"   >> "$GITHUB_OUTPUT"
+          else
+            echo "drift_detected=False"   >> "$GITHUB_OUTPUT"
+            echo "drift_share=0"          >> "$GITHUB_OUTPUT"
+            echo "drifted_cols=unknown"   >> "$GITHUB_OUTPUT"
+            echo "n_current=0"            >> "$GITHUB_OUTPUT"
+            echo "n_reference=0"          >> "$GITHUB_OUTPUT"
+            echo "insufficient_data=False" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Re-raise for workflow status (exit 1 = drift, exit 2 = insufficient data)
+          if [ "$DRIFT_EXIT" -eq 1 ]; then
+            echo "::error::Data drift detected! Check the report artifact and the GitHub Issue."
+            exit 1
+          elif [ "$DRIFT_EXIT" -eq 2 ]; then
+            echo "::warning::Insufficient production data for drift detection (< $MIN_SAMPLES samples)."
+            exit 0   # not a hard failure — just a warning
+          elif [ "$DRIFT_EXIT" -eq 3 ]; then
+            echo "::error::Drift check failed with a configuration or connectivity error."
+            exit 1
+          fi
+
+      # ── Upload HTML report artifact ───────────────────────────────────────
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "drift-report-${{ github.run_id }}"
+          path: |
+            reports/*.html
+            reports/*.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Write job summary ─────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          DETECTED="${{ steps.drift.outputs.drift_detected }}"
+          ICON=$( [ "$DETECTED" = "True" ] && echo "🔴" || echo "🟢" )
+          LABEL=$( [ "$DETECTED" = "True" ] && echo "DRIFT DETECTED" || echo "NO DRIFT" )
+
+          echo "## ${ICON} Data Drift Monitor — ${LABEL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Drift detected | \`${{ steps.drift.outputs.drift_detected }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Drift share | \`${{ steps.drift.outputs.drift_share }}%\` (threshold: \`${{ env.DRIFT_THRESHOLD * 100 }}%\`) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Drifted features | \`${{ steps.drift.outputs.drifted_cols }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reference samples | \`${{ steps.drift.outputs.n_reference }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Current samples | \`${{ steps.drift.outputs.n_current }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Window | Last \`${{ env.WINDOW_DAYS }}\` days |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> 📎 Full HTML report attached as a workflow artifact." >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Create / update GitHub Issue if drift detected ────────────────────
+      # Uses the built-in GITHUB_TOKEN — zero cost, no extra secrets.
+      - name: Create or update GitHub Issue on drift
+        if: steps.drift.outputs.drift_detected == 'True'
+        uses: actions/github-script@v7
+        env:
+          DRIFT_SHARE:   ${{ steps.drift.outputs.drift_share }}
+          DRIFTED_COLS:  ${{ steps.drift.outputs.drifted_cols }}
+          N_CURRENT:     ${{ steps.drift.outputs.n_current }}
+          N_REFERENCE:   ${{ steps.drift.outputs.n_reference }}
+          WINDOW_DAYS:   ${{ env.WINDOW_DAYS }}
+          THRESHOLD:     ${{ env.DRIFT_THRESHOLD }}
+          RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { DRIFT_SHARE, DRIFTED_COLS, N_CURRENT, N_REFERENCE,
+                    WINDOW_DAYS, THRESHOLD, RUN_URL } = process.env;
+
+            const date     = new Date().toISOString().split('T')[0];
+            const runLink  = `[View full report & artifacts](${RUN_URL})`;
+            const driftPct = parseFloat(DRIFT_SHARE).toFixed(1);
+            const threshPct = (parseFloat(THRESHOLD) * 100).toFixed(0);
+
+            const issueTitle = `🚨 Data Drift Detected — ${date}`;
+
+            const issueBody = [
+              `## 🚨 Data Drift Alert`,
+              ``,
+              `**Detected on:** ${new Date().toUTCString()}`,
+              ``,
+              `### Summary`,
+              ``,
+              `| Metric | Value |`,
+              `|--------|-------|`,
+              `| Drift share | **${driftPct}%** (threshold: ${threshPct}%) |`,
+              `| Drifted features | \`${DRIFTED_COLS}\` |`,
+              `| Current samples | ${N_CURRENT} (last ${WINDOW_DAYS} days) |`,
+              `| Reference samples | ${N_REFERENCE} (training set) |`,
+              ``,
+              `### What drifted?`,
+              ``,
+              (DRIFTED_COLS || 'unknown').split(',').map(c => `- \`${c.trim()}\``).join('\n'),
+              ``,
+              `### Possible causes`,
+              ``,
+              `- **brightness / contrast drift** → Camera sensor aging, lighting change, lens contamination`,
+              `- **predicted_class drift** → Shift in defect mix (process change, new product line)`,
+              `- **confidence drift** → Model encountering out-of-distribution inputs`,
+              ``,
+              `### Recommended actions`,
+              ``,
+              `1. 🔍 Inspect the [HTML drift report](${RUN_URL}) for visual distribution plots`,
+              `2. 🏭 Check camera / sensor hardware for physical changes`,
+              `3. 📊 Review recent production line changes with the operations team`,
+              `4. 🔁 If drift is confirmed and persistent, **retrigger training** with recent data`,
+              `5. ✅ Close this issue once root cause is resolved`,
+              ``,
+              `### Links`,
+              ``,
+              `- ${runLink}`,
+              `- [Drift Monitor Workflow](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/workflows/drift_monitor.yml)`,
+              ``,
+              `---`,
+              `*Auto-generated by the [Data Drift Monitor](.github/workflows/drift_monitor.yml) workflow.*`,
+            ].join('\n');
+
+            // Ensure labels exist (ignore "already exists" errors)
+            for (const [name, color, desc] of [
+              ['drift-alert',  'FF0000', 'Automated data drift alert'],
+              ['monitoring',   '0075CA', 'Observability and monitoring'],
+              ['automated',    'E4E669', 'Created by a GitHub Actions workflow'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  name, color, description: desc,
+                });
+              } catch (_) { /* already exists */ }
+            }
+
+            // Check for an existing open drift-alert issue
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner:  context.repo.owner,
+              repo:   context.repo.repo,
+              state:  'open',
+              labels: 'drift-alert',
+              per_page: 10,
+            });
+
+            if (openIssues.length === 0) {
+              // No existing issue — create a new one
+              const { data: newIssue } = await github.rest.issues.create({
+                owner:  context.repo.owner,
+                repo:   context.repo.repo,
+                title:  issueTitle,
+                body:   issueBody,
+                labels: ['drift-alert', 'monitoring', 'automated'],
+              });
+              core.notice(`Created drift alert issue #${newIssue.number}: ${newIssue.html_url}`);
+            } else {
+              // Issue already open — add a comment with the latest run info
+              const existingIssue = openIssues[0];
+              await github.rest.issues.createComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                issue_number: existingIssue.number,
+                body: [
+                  `### 🔄 Drift still present — ${date}`,
+                  ``,
+                  `Latest run detected **${driftPct}%** feature drift (drifted: \`${DRIFTED_COLS}\`).`,
+                  ``,
+                  `${runLink}`,
+                ].join('\n'),
+              });
+              core.notice(`Updated existing drift issue #${existingIssue.number}.`);
+            }
+
+      # ── Auto-close drift issue if resolved ────────────────────────────────
+      - name: Close drift issue if drift resolved
+        if: steps.drift.outputs.drift_detected == 'False' && steps.drift.outputs.drift_exit_code == '0'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner:  context.repo.owner,
+              repo:   context.repo.repo,
+              state:  'open',
+              labels: 'drift-alert',
+              per_page: 10,
+            });
+
+            const date = new Date().toISOString().split('T')[0];
+
+            for (const issue of openIssues) {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  `### ✅ Drift Resolved — ${date}`,
+                  ``,
+                  `The weekly drift monitor detected **no significant drift** this run.`,
+                  `Closing automatically.`,
+                  ``,
+                  `Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+                ].join('\n'),
+              });
+
+              await github.rest.issues.update({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: issue.number,
+                state:        'closed',
+              });
+
+              core.notice(`Closed drift issue #${issue.number} — drift resolved.`);
+            }

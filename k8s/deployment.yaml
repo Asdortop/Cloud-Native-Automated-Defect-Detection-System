@@ -1,0 +1,171 @@
+# k8s/deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment for the FastAPI defect-inspection serving container.
+#
+# Key design decisions
+# ─────────────────────
+#  imagePullPolicy: Never
+#      Tells Kubernetes to NEVER try to pull this image from a registry.
+#      The image must be pre-loaded into the Kind cluster with:
+#          kind load docker-image defect-serving:latest --name defect-inspection
+#
+#  resources.requests.cpu: 250m
+#      REQUIRED for the HorizontalPodAutoscaler to compute utilization %.
+#      Without a CPU request, the HPA cannot calculate a target.
+#
+#  HostPath volume at /models
+#      Reads the ONNX model file from the Kind node's /models directory,
+#      which is itself bind-mounted from the host via kind-config.yaml
+#      extraMounts.  No PVC or cloud storage needed for local development.
+#
+#  Prometheus annotations
+#      The prometheus.io/* annotations tell any Prometheus scraper in the
+#      cluster to scrape the /metrics endpoint automatically.
+#
+#  PodDisruptionBudget (companion — see pdb.yaml)
+#      Ensures at least 1 replica is alive during node drains / upgrades.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: defect-serving
+  namespace: defect-inspection
+  labels:
+    app: defect-serving
+    app.kubernetes.io/name: defect-serving
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: inference-api
+spec:
+  # Minimum 2 replicas so we always have coverage during a RollingUpdate.
+  # The HPA will scale this up to 10 pods under load.
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: defect-serving
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # at most 1 extra pod during the rollout
+      maxUnavailable: 0  # never take a pod down before the replacement is ready
+
+  template:
+    metadata:
+      labels:
+        app: defect-serving
+        app.kubernetes.io/name: defect-serving
+        app.kubernetes.io/version: "1.0.0"
+
+      annotations:
+        # Prometheus auto-discovery — any Prometheus in the cluster will
+        # scrape /metrics on port 8080 for free without extra configuration.
+        prometheus.io/scrape: "true"
+        prometheus.io/path:   "/metrics"
+        prometheus.io/port:   "8080"
+
+    spec:
+      # ── Security context ─────────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      # ── Graceful shutdown ────────────────────────────────────────────────
+      # Gives uvicorn 30 s to drain in-flight requests before SIGKILL.
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: serving
+          # imagePullPolicy: Never is the critical flag for Kind local images.
+          # Change to IfNotPresent or Always when using a real registry.
+          image: defect-serving:latest
+          imagePullPolicy: Never
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # ── Environment from ConfigMap ──────────────────────────────────
+          envFrom:
+            - configMapRef:
+                name: serving-config
+
+          # ── Resource budget ─────────────────────────────────────────────
+          # requests.cpu MUST be set for HPA utilization math to work.
+          # limits.cpu prevents a runaway pod from starving its neighbours.
+          resources:
+            requests:
+              cpu:    250m    # 0.25 vCPU — baseline for a single uvicorn worker
+              memory: 512Mi
+            limits:
+              cpu:    1000m   # 1 vCPU cap
+              memory: 1Gi
+
+          # ── Model volume ────────────────────────────────────────────────
+          volumeMounts:
+            - name: model-store
+              mountPath: /models
+              readOnly: true
+
+          # ── Liveness probe ──────────────────────────────────────────────
+          # Kubernetes restarts the container if /health returns non-2xx.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30   # give uvicorn + ORT time to load the model
+            periodSeconds:       15
+            timeoutSeconds:       5
+            failureThreshold:     3
+
+          # ── Readiness probe ─────────────────────────────────────────────
+          # Pod only receives traffic once /health responds successfully.
+          # This prevents requests hitting a pod whose model isn't loaded yet.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds:       10
+            timeoutSeconds:       5
+            failureThreshold:     3
+            successThreshold:     1
+
+          # ── Startup probe ───────────────────────────────────────────────
+          # Extra time budget on first boot (model load can take > 10 s).
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 12   # 12 × 10 s = up to 2 min to start
+            periodSeconds:    10
+
+          # ── Container security ──────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # uvicorn writes temp files
+            capabilities:
+              drop: ["ALL"]
+
+      # ── Volumes ────────────────────────────────────────────────────────────
+      volumes:
+        - name: model-store
+          # HostPath — reads from the Kind node's /models directory.
+          # The node gets this directory via kind-config.yaml extraMounts,
+          # which binds it from your laptop's models/ folder.
+          hostPath:
+            path: /models
+            type: DirectoryOrCreate   # no error if directory not yet present
+
+      # ── Topology spread ────────────────────────────────────────────────────
+      # Spread pods across nodes (useful when you scale Kind to multi-node).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: defect-serving

@@ -1,0 +1,25 @@
+# k8s/configmap.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Non-sensitive configuration for the FastAPI serving container.
+# Secrets (API keys, DB passwords) would go in a separate Secret object.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serving-config
+  namespace: defect-inspection
+  labels:
+    app: defect-serving
+data:
+  # Path inside the pod — mounted from the Kind node via HostPath volume
+  ONNX_MODEL_PATH:  "/models/defect_efficientnet_b0.onnx"
+
+  # Comma-separated class labels in the same alphabetical order used at training
+  CLASS_NAMES: "Crazing,Inclusion,Patches,Pitted_surface,Rolled-in_scale,Scratches"
+
+  # Uvicorn log level
+  LOG_LEVEL: "info"
+
+  # Binding address inside the container
+  HOST: "0.0.0.0"
+  PORT: "8080"

@@ -1,0 +1,46 @@
+# k8s/service.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Service for the defect-serving Deployment.
+#
+# Type: NodePort
+#   • nodePort 30080 is the port on the Kind node that routes to pod port 8080.
+#   • Because kind-config.yaml maps hostPort 8080 → containerPort 30080,
+#     the full chain becomes:
+#
+#       your laptop :8080  →  Kind node :30080  →  pod :8080
+#
+#   • After `kubectl apply -f k8s/` you can reach the API directly:
+#       curl http://localhost:8080/health
+#       curl http://localhost:8080/docs
+#
+# Switching to ClusterIP + Ingress for production
+# ────────────────────────────────────────────────
+#   Change `type: NodePort` to `type: ClusterIP`, remove `nodePort`, and
+#   add an Ingress resource (nginx, Traefik, etc.) in front of this service.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: defect-serving
+  namespace: defect-inspection
+  labels:
+    app: defect-serving
+    app.kubernetes.io/name: defect-serving
+    app.kubernetes.io/component: inference-api
+  annotations:
+    # Prometheus ServiceMonitor discovery (used by the Prometheus Operator)
+    prometheus.io/scrape: "true"
+    prometheus.io/port:   "8080"
+    prometheus.io/path:   "/metrics"
+spec:
+  type: NodePort
+  selector:
+    app: defect-serving   # routes to pods whose label matches
+  ports:
+    - name:       http
+      protocol:   TCP
+      port:       80          # cluster-internal port (within the namespace)
+      targetPort: 8080        # container port inside the pod
+      nodePort:   30080       # node-level port (must match kind-config.yaml)
+  sessionAffinity: None

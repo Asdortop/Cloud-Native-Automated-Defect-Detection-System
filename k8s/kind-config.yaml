@@ -1,0 +1,49 @@
+# k8s/kind-config.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Kind cluster configuration for the defect-inspection stack.
+#
+# What this does
+# ──────────────
+#  • Creates a single-node cluster (control-plane doubles as worker — free).
+#  • Binds the host's models/ directory into the node at /models so the
+#    pod can read the ONNX file without a registry or PVC.
+#  • Forwards host port 8080 → node NodePort 30080 → serving pod port 8080
+#    so you can test with curl http://localhost:8080 directly from your laptop.
+#
+# Usage
+# ─────
+#   # IMPORTANT: replace the hostPath below with your absolute local path
+#   #            (Windows: use forward slashes, e.g. C:/Users/you/project/models)
+#   kind create cluster --name defect-inspection --config k8s/kind-config.yaml
+#
+# Teardown
+# ────────
+#   kind delete cluster --name defect-inspection
+# ─────────────────────────────────────────────────────────────────────────────
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: defect-inspection
+
+nodes:
+  - role: control-plane
+    # ── Host → Node directory mounts ────────────────────────────────────────
+    # The ONNX model lives here on your laptop.
+    # Kind mounts this path into the cluster node so HostPath volumes work.
+    #
+    # Replace the hostPath value with the ABSOLUTE path to your models/ dir:
+    #   macOS / Linux : /home/<you>/defect-inspection/models
+    #   Windows       : C:/Users/<you>/Downloads/projects/defect-inspection/models
+    extraMounts:
+      - hostPath: ./models           # relative path — fine for `kind create cluster`
+        containerPath: /models       # path inside the Kind node (not the pod)
+        readOnly: true
+
+    # ── Host port mappings ───────────────────────────────────────────────────
+    # Maps localhost:8080 → Kind node port 30080 (which is the Service nodePort)
+    # This lets you test with: curl http://localhost:8080/health
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

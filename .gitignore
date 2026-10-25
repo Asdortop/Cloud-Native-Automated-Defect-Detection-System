@@ -1,0 +1,49 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.eggs/
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files — tracked by DVC, not git
+/data/raw/
+/data/processed/
+/data/features/
+/data/dvc-storage/
+
+# MLflow artefacts
+mlruns/
+mlartifacts/
+
+# DVC cache (only cache lives here, .dvc files ARE committed)
+.dvc/cache/
+.dvc/tmp/
+
+# Model binaries (track large ones via DVC)
+*.pt
+*.pth
+*.onnx
+*.pkl

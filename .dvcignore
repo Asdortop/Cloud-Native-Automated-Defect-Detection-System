@@ -1,0 +1,3 @@
+# DVC internal temp files — never commit these
+/tmp
+/cache

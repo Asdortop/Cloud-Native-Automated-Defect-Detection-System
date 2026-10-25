@@ -1,0 +1,18 @@
+# docker/grafana/provisioning/dashboards/dashboard.yml
+# ─────────────────────────────────────────────────────
+# Tells Grafana to load all JSON files from this directory as dashboards.
+
+apiVersion: 1
+
+providers:
+  - name: "defect-dashboards"
+    orgId: 1
+    folder: "Defect Inspection"
+    folderUid: "defect-inspection"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,35 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+# Deep Learning
+torch
+torchvision
+
+# Data Processing
+pandas
+numpy
+Pillow
+scikit-learn
+pyyaml
+
+# MLOps & Experiment Tracking
+dvc
+mlflow
+
+# Serving
+fastapi
+uvicorn
+prometheus-fastapi-instrumentator
+
+# Model Export & Inference
+onnx
+onnxruntime
+
+# Streaming pipeline (Kafka / Redpanda)
+kafka-python
+
+# Database
+psycopg2-binary
+
+# Testing
+pytest
+httpx
+python-multipart

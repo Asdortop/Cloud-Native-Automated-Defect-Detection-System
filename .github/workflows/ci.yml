@@ -1,0 +1,408 @@
+# .github/workflows/ci.yml
+# ──────────────────────────────────────────────────────────────────────────
+# Defect Inspection — CI/CD + Model Quality Gate
+#
+# Jobs
+# ────
+#  ci          Runs on every push:
+#               • Install deps (CPU-only torch for speed)
+#               • pytest (unit + API tests)
+#               • Build & push Docker image to ghcr.io:<sha>
+#
+#  model-gate  Runs on schedule (weekly) or manual dispatch:
+#               • Start ephemeral local MLflow (SQLite backend)
+#               • Optionally pull DVC artifacts (model checkpoint)
+#               • evaluate_gate.py — exits 1 if recall < threshold
+#               • Annotates the workflow run with a pass/fail summary
+#
+# Permissions
+# ──────────────────
+#   packages: write   → ghcr.io push with built-in GITHUB_TOKEN
+#   contents: read    → checkout
+#   checks:   write   → job summaries
+#
+# No paid registry, no extra secrets required.
+# ──────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"                         # every branch
+  schedule:
+    # ┌──── minute (0)
+    # │ ┌── hour (6 = 06:00 UTC = ~11:30 IST, free tier window)
+    # │ │ ┌─ day-of-month (*)
+    # │ │ │ ┌ month (*)
+    # │ │ │ │ ┌ day-of-week (1 = Monday)
+    - cron: "0 6 * * 1"              # Every Monday at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      mlflow_tracking_uri:
+        description: "MLflow tracking server URI (leave blank for local SQLite)"
+        required: false
+        default: ""
+      model_name:
+        description: "Registered model name in MLflow Model Registry"
+        required: false
+        default: "defect-efficientnet_b0"
+      experiment_name:
+        description: "MLflow experiment name to search for the latest run"
+        required: false
+        default: "defect-inspection"
+      threshold:
+        description: "Minimum recall threshold (0.0 – 1.0)"
+        required: false
+        default: "0.90"
+      run_id:
+        description: "Evaluate a specific MLflow run ID (optional)"
+        required: false
+        default: ""
+
+# Cancel any in-progress run for the same branch so a fast-follow push
+# doesn't queue behind a stale run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal default permissions — each job elevates only what it needs.
+permissions:
+  contents: read
+
+# ──────────────────────────────────────────────────────────────────────────
+# Re-usable step snippets via env
+# ──────────────────────────────────────────────────────────────────────────
+env:
+  # CPU-only PyTorch index — avoids downloading the 2 GB CUDA wheel in CI.
+  TORCH_INDEX: https://download.pytorch.org/whl/cpu
+  # Python version pinned to match the serving Dockerfile base.
+  PYTHON_VERSION: "3.10"
+  # Image name (lowercase required by ghcr.io)
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/defect-serving
+
+jobs:
+
+  # ════════════════════════════════════════════════════════════════════════
+  # JOB 1 — ci
+  # Runs on every push.  Steps: deps → test → build → push.
+  # ════════════════════════════════════════════════════════════════════════
+  ci:
+    name: "Test · Build · Push"
+    runs-on: ubuntu-22.04
+    # Only the push event triggers this job.
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write    # required to push to ghcr.io
+
+    steps:
+
+      # ── Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Python environment ────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          # actions/setup-python caches the entire pip download cache
+          # keyed on the hash of requirements.txt — no extra cache step needed.
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # ── Dependencies ──────────────────────────────────────────────────────
+      - name: Install CPU-only PyTorch (fast CI wheel)
+        run: |
+          pip install --upgrade pip
+          # Install CPU-only torch/torchvision first so the CUDA build (~2 GB)
+          # is never pulled in by a transitive dependency.
+          pip install \
+            torch==2.1.2+cpu \
+            torchvision==0.16.2+cpu \
+            --extra-index-url ${{ env.TORCH_INDEX }}
+
+      - name: Install project dependencies
+        run: |
+          pip install \
+            mlflow scikit-learn pyyaml \
+            fastapi "uvicorn[standard]" \
+            onnx onnxruntime \
+            prometheus-fastapi-instrumentator \
+            kafka-python psycopg2-binary \
+            pytest httpx python-multipart \
+            Pillow numpy pandas
+
+      # ── Tests ─────────────────────────────────────────────────────────────
+      - name: Run pytest
+        id: pytest
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONPATH: .
+        run: |
+          python -m pytest tests/ \
+            --tb=short \
+            --color=yes \
+            -v \
+            --junitxml=pytest-results.xml \
+            2>&1 | tee pytest-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload test results
+        if: always()          # upload even when tests fail
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-${{ github.sha }}
+          path: |
+            pytest-results.xml
+            pytest-output.txt
+          retention-days: 14
+
+      # ── Docker: set up Buildx ─────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Docker: authenticate to GHCR with built-in token ─────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN is automatically available — no extra secret needed.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Docker: compute image tags ────────────────────────────────────────
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # Full 40-char git SHA — pinnable, immutable
+            type=sha,prefix=,format=long
+            # Short SHA — convenient for humans
+            type=sha,prefix=sha-,format=short
+            # Semver from git tag (e.g. v1.2.3)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # 'latest' only on the default branch
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          labels: |
+            org.opencontainers.image.title=Defect Inspection Serving
+            org.opencontainers.image.description=EfficientNet-B0 ONNX inference API
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+
+      # ── Docker: build and push ────────────────────────────────────────────
+      - name: Build and push image
+        id: build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          # GitHub Actions cache — dramatically speeds up rebuilds on
+          # unchanged layers (torch wheel layer is ~600 MB).
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          provenance: false    # skip SBOM attestation for simplicity
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## CI Results — \`${{ github.ref_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Step | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tests | ${{ steps.pytest.outcome == 'success' && '✅ passed' || '❌ failed' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Docker build | ${{ steps.build-push.outcome == 'success' && '✅ pushed' || '⏭ skipped / failed' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image digest:** \`${{ steps.build-push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Pull command:**" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ghcr.io/${{ github.repository }}/defect-serving:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+
+  # ════════════════════════════════════════════════════════════════════════
+  # JOB 2 — model-gate
+  # Runs ONLY on:
+  #   • schedule  (weekly cron — free on GitHub Actions)
+  #   • workflow_dispatch  (manual "Run workflow" button)
+  #
+  # Fails the workflow (exit 1) if the latest MLflow run's recall is below
+  # the configured threshold or below the current production champion.
+  # ════════════════════════════════════════════════════════════════════════
+  model-gate:
+    name: "Model Quality Gate"
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+      checks: write       # allows writing job annotations / summaries
+
+    # Resolved values — workflow_dispatch inputs take priority; cron uses defaults.
+    env:
+      GATE_THRESHOLD:    ${{ inputs.threshold        || '0.90' }}
+      GATE_MODEL_NAME:   ${{ inputs.model_name       || 'defect-efficientnet_b0' }}
+      GATE_EXPERIMENT:   ${{ inputs.experiment_name  || 'defect-inspection' }}
+      GATE_RUN_ID:       ${{ inputs.run_id           || '' }}
+      # If no external MLflow URI supplied, we start a local server in step 3.
+      MLFLOW_TRACKING_URI: ${{ inputs.mlflow_tracking_uri || 'http://127.0.0.1:5000' }}
+
+    steps:
+
+      # ── Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Python environment ────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # ── Dependencies ──────────────────────────────────────────────────────
+      - name: Install CPU-only PyTorch
+        run: |
+          pip install --upgrade pip
+          pip install \
+            torch==2.1.2+cpu \
+            torchvision==0.16.2+cpu \
+            --extra-index-url ${{ env.TORCH_INDEX }}
+
+      - name: Install project dependencies
+        run: |
+          pip install \
+            mlflow scikit-learn pyyaml \
+            onnx onnxruntime \
+            Pillow numpy pandas
+
+      # ── Optional DVC pull (if remote is configured) ──────────────────────
+      # If the repo has a DVC remote configured (e.g. Google Drive, S3),
+      # pull the latest model artifact.  If DVC remote is not set up this
+      # step is a no-op (dvc pull exits 0 with a warning).
+      - name: Pull DVC artifacts (model checkpoint)
+        continue-on-error: true     # non-fatal — gate will fail later if no model
+        run: |
+          pip install dvc --quiet
+          dvc pull --no-run-cache 2>&1 || echo "DVC pull skipped (no remote or no data)."
+
+      # ── Start local MLflow server (when no external URI supplied) ─────────
+      - name: Start ephemeral MLflow tracking server
+        if: ${{ inputs.mlflow_tracking_uri == '' || inputs.mlflow_tracking_uri == null }}
+        run: |
+          mkdir -p mlartifacts
+          mlflow server \
+            --backend-store-uri  sqlite:///ci_mlflow.db \
+            --default-artifact-root ./mlartifacts \
+            --host 127.0.0.1 \
+            --port 5000 &
+          echo "MLflow PID: $!"
+
+          # Poll until the health endpoint responds (max 60 s)
+          echo "Waiting for MLflow to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5000/health > /dev/null 2>&1; then
+              echo "MLflow is ready (attempt $i)."
+              break
+            fi
+            sleep 2
+          done
+
+          curl -sf http://127.0.0.1:5000/health \
+            || { echo "ERROR: MLflow did not start in time."; exit 1; }
+
+      # ── Verify connectivity to external MLflow (when URI is supplied) ─────
+      - name: Verify MLflow connectivity
+        if: ${{ inputs.mlflow_tracking_uri != '' && inputs.mlflow_tracking_uri != null }}
+        run: |
+          echo "Checking connectivity to: $MLFLOW_TRACKING_URI"
+          curl -sf "${MLFLOW_TRACKING_URI}/health" \
+            || { echo "ERROR: Cannot reach MLflow at ${MLFLOW_TRACKING_URI}"; exit 1; }
+
+      # ── Run the quality gate ──────────────────────────────────────────────
+      - name: Run evaluate_gate.py
+        id: gate
+        env:
+          PYTHONPATH: .
+          PYTHONIOENCODING: utf-8
+        run: |
+          # Build the argument list dynamically
+          ARGS=(
+            --tracking-uri "$MLFLOW_TRACKING_URI"
+            --model-name   "$GATE_MODEL_NAME"
+            --experiment   "$GATE_EXPERIMENT"
+            --threshold    "$GATE_THRESHOLD"
+          )
+          # Append --run-id only when explicitly provided
+          if [[ -n "$GATE_RUN_ID" ]]; then
+            ARGS+=(--run-id "$GATE_RUN_ID")
+          fi
+
+          echo "Running: python src/training/evaluate_gate.py ${ARGS[*]}"
+          python src/training/evaluate_gate.py "${ARGS[@]}" 2>&1 \
+            | tee gate-output.txt
+          GATE_EXIT=${PIPESTATUS[0]}
+
+          # Capture last meaningful log line for the job summary
+          GATE_VERDICT=$(grep -E "(GATE PASSED|GATE FAILED|Error)" gate-output.txt \
+                         | tail -1 || echo "No verdict line found")
+          echo "verdict=${GATE_VERDICT}" >> "$GITHUB_OUTPUT"
+          echo "exit_code=${GATE_EXIT}"  >> "$GITHUB_OUTPUT"
+
+          exit $GATE_EXIT   # propagate failure to the workflow
+
+      # ── Upload gate log ───────────────────────────────────────────────────
+      - name: Upload gate output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-output-${{ github.run_id }}
+          path: gate-output.txt
+          retention-days: 30
+
+      # ── Job summary ───────────────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          PASSED="${{ steps.gate.outcome == 'success' }}"
+          ICON=$( [ "$PASSED" = "true" ] && echo "✅" || echo "❌" )
+          LABEL=$( [ "$PASSED" = "true" ] && echo "PASSED" || echo "FAILED" )
+
+          echo "## Model Quality Gate — ${ICON} ${LABEL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Threshold | \`${{ env.GATE_THRESHOLD }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Model name | \`${{ env.GATE_MODEL_NAME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Experiment | \`${{ env.GATE_EXPERIMENT }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| MLflow URI | \`${{ env.MLFLOW_TRACKING_URI }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Run ID | \`${{ env.GATE_RUN_ID || '(latest)' }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | \`${{ github.event_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f gate-output.txt ]; then
+            echo "<details><summary>Full gate log</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+            cat gate-output.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PASSED" = "true" ]; then
+            echo "> ✅ Model meets recall threshold \`${{ env.GATE_THRESHOLD }}\` — promoted to **Staging**." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "> ❌ Model did **not** meet the recall threshold. No version was promoted." >> "$GITHUB_STEP_SUMMARY"
+          fi

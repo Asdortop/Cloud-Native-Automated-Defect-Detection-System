@@ -1,0 +1,18 @@
+# docker/grafana/provisioning/datasources/prometheus.yml
+# ─────────────────────────────────────────────────────
+# Automatically provisions Prometheus as a datasource so the dashboard
+# works out of the box without any manual UI configuration.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus-main         # stable UID referenced in dashboard JSON
+    url: http://prometheus:9090
+    access: proxy
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"        # match Prometheus scrape_interval
+      exemplarTraceIdDestinations: []
